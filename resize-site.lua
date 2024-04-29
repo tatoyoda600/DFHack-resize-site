@@ -391,12 +391,14 @@ local function hideTiles(region_pos_list)
                 end
 
                 -- Hide/Reveal tiles that are above/below the column surface
-                for x,y_list in pairs(column.elevation) do
-                    for y,elevation in pairs(y_list) do
+                for rel_x,y_list in pairs(column.elevation) do
+                    for rel_y,elevation in pairs(y_list) do
                         local tile_height = elevation - column.z_base - 1
                         if tile_height ~= avg_tile_height then
-                            for z=tile_height + 1, avg_tile_height, sign(avg_tile_height - tile_height) do
-                                local designation = dfhack.maps.getTileFlags(x, y, z)
+                            local btm = math.min(tile_height, avg_tile_height) + 1
+                            local top = math.max(tile_height, avg_tile_height)
+                            for z=btm, top do
+                                local designation = dfhack.maps.getTileFlags((region_pos.x + rel_x), (region_pos.y + rel_y), z)
                                 designation.hidden = not designation.hidden
                             end
                         end
@@ -407,9 +409,9 @@ local function hideTiles(region_pos_list)
     end
 end
 
----@type table<string, fun(site: world_site, new_rect: coord_rect)>
+---@type table<string, fun(new_rect: coord_rect)>
 local preserveData = {
-    ["units"] = function(site, new_rect)
+    ["units"] = function(new_rect)
         ---@type _world_units_active|unit[]
         local units_active = df.global.world.units.active
 
@@ -417,8 +419,8 @@ local preserveData = {
         for _,unit in pairs(units_active) do
             if not isInRect(unit.pos, new_rect) then
                 -- Add the unit to the preserved list
-                local global_x_pos = site.global_min_x * 48 + unit.pos.x
-                local global_y_pos = site.global_min_y * 48 + unit.pos.y
+                local global_x_pos = df.global.world.map.region_x * 48 + unit.pos.x
+                local global_y_pos = df.global.world.map.region_y * 48 + unit.pos.y
                 preserved_data.insertUnit(unit, { x= global_x_pos, y= global_y_pos, z= unit.pos.z })
 
                 -- Put the unit in the storage cage, making them immobile and invisible
@@ -433,7 +435,7 @@ local preserveData = {
             end
         end
     end,
-    ["items"] = function(site, new_rect)
+    ["items"] = function(new_rect)
         ---@type _world_items_all|item[]
         local items_all = df.global.world.items.all
 
@@ -441,8 +443,8 @@ local preserveData = {
         for _,item in pairs(items_all) do
             if not isInRect(item.pos, new_rect) then
                 -- Add the item to the preserved list
-                local global_x_pos = site.global_min_x * 48 + item.pos.x
-                local global_y_pos = site.global_min_y * 48 + item.pos.y
+                local global_x_pos = df.global.world.map.region_x * 48 + item.pos.x
+                local global_y_pos = df.global.world.map.region_y * 48 + item.pos.y
                 preserved_data.insertItem(item, { x= global_x_pos, y= global_y_pos, z= item.pos.z })
 
                 -- Forbid and hide the item
@@ -453,9 +455,9 @@ local preserveData = {
     end,
 }
 
----@type table<string, fun(site: world_site, new_global_rect: coord_rect)>
+---@type table<string, fun(new_global_rect: coord_rect)>
 local recoverData = {
-    ["units"] =  function(site, new_global_rect)
+    ["units"] =  function(new_global_rect)
         -- Find the preserved units that lie inside the new rect
         for x,y_list in pairs(preserved_data.units) do
             if x >= new_global_rect.x1 and x <= new_global_rect.x2 then
@@ -482,7 +484,7 @@ local recoverData = {
 
                                     -- Uncage the unit and restore its position
                                     unit.flags1.caged = false
-                                    unit.pos = xyz2pos(x - site.global_min_x * 48, y - site.global_min_y * 48, z)
+                                    unit.pos = xyz2pos(x - df.global.world.map.region_x * 48, y - df.global.world.map.region_y * 48, z)
                                 end
 
                                 -- Remove the unit from the list
@@ -494,7 +496,7 @@ local recoverData = {
             end
         end
     end,
-    ["items"] = function(site, new_global_rect)
+    ["items"] = function(new_global_rect)
         -- Find the preserved items that lie inside the new rect
         for x,y_list in pairs(preserved_data.items) do
             if x >= new_global_rect.x1 and x <= new_global_rect.x2 then
@@ -508,7 +510,7 @@ local recoverData = {
                                     -- Unforbid and unhide the item
                                     item.flags.forbid = false
                                     item.flags.hidden = false
-                                    item.pos = xyz2pos(x - site.global_min_x * 48, y - site.global_min_y * 48, z)
+                                    item.pos = xyz2pos(x - df.global.world.map.region_x * 48, y - df.global.world.map.region_y * 48, z)
                                 end
 
                                 -- Remove the item from the list
@@ -549,10 +551,10 @@ local function resize(nesw, keep_flags)
     -- If any data type is set to be kept
     if keep_flags then
         local new_rect = {
-            x1= nesw.w * -48,
-            x2= (nesw.e + 1 + site.global_max_x - site.global_min_x) * 48 - 1,
-            y1= nesw.n * -48,
-            y2= (nesw.s + 1 + site.global_max_y - site.global_min_y) * 48 - 1
+            x1= (site.global_min_x - df.global.world.map.region_x - nesw.w) * 48,
+            x2= (nesw.e + 1 + site.global_max_x - df.global.world.map.region_x) * 48 - 1,
+            y1= (site.global_min_y - df.global.world.map.region_y - nesw.n) * 48,
+            y2= (nesw.s + 1 + site.global_max_y - df.global.world.map.region_y) * 48 - 1
         }
 
         -- The in bounds position where the data will be stored
@@ -566,7 +568,7 @@ local function resize(nesw, keep_flags)
         -- Loop through all the data types' preservation functions
         for key,func in pairs(preserveData) do
             if keep_flags.all or keep_flags[key] then
-                func(site, new_rect)
+                func(new_rect)
             end
         end
     end
@@ -592,23 +594,30 @@ local function resize(nesw, keep_flags)
                 df.global.cur_season_tick = store_season_tick + 15
             end
 
+            local map_block_site_rect = {
+                x1= (site.global_min_x - df.global.world.map.region_x) * 3,
+                x2= (site.global_max_x - df.global.world.map.region_x + 1) * 3,
+                y1= (site.global_min_y - df.global.world.map.region_y) * 3,
+                y2= (site.global_max_y - df.global.world.map.region_y + 1) * 3,
+            }
+
             -- Calculate the new region tiles that were created
             local new_region_tiles_set = {}
-            for x=0, df.global.world.map.x_count_block - 1 do
+            for x=map_block_site_rect.x1, map_block_site_rect.x2 - 1 do
                 new_region_tiles_set[x] = new_region_tiles_set[x] or {}
-                for y=0, (nesw.n * 3) - 1 do
+                for y=map_block_site_rect.y1, map_block_site_rect.y1 + (nesw.n * 3) - 1 do
                     new_region_tiles_set[x][y] = true
                 end
-                for y=df.global.world.map.y_count_block - nesw.s * 3, df.global.world.map.y_count_block - 1 do
+                for y=map_block_site_rect.y2 - nesw.s * 3, map_block_site_rect.y2 - 1 do
                     new_region_tiles_set[x][y] = true
                 end
             end
-            for y=0, df.global.world.map.y_count_block - 1 do
-                for x=df.global.world.map.x_count_block - nesw.e * 3, df.global.world.map.x_count_block - 1 do
+            for y=map_block_site_rect.y1, map_block_site_rect.y2 - 1 do
+                for x=map_block_site_rect.x2 - nesw.e * 3, map_block_site_rect.x2 - 1 do
                     new_region_tiles_set[x] = new_region_tiles_set[x] or {}
                     new_region_tiles_set[x][y] = true
                 end
-                for x=0, (nesw.w * 3) - 1 do
+                for x=map_block_site_rect.x1, map_block_site_rect.x1 + (nesw.w * 3) - 1 do
                     new_region_tiles_set[x] = new_region_tiles_set[x] or {}
                     new_region_tiles_set[x][y] = true
                 end
@@ -650,7 +659,7 @@ local function resize(nesw, keep_flags)
                 -- Loop through all the data types' recovery functions
                 for key,func in pairs(recoverData) do
                     if keep_flags.all or keep_flags[key] then
-                        func(site, new_global_rect)
+                        func(new_global_rect)
                     end
                 end
 
@@ -1025,9 +1034,9 @@ function Resize:init()
 end
 
 function Resize:visualize()
-    local min_x = self.offset.x * 48 - df.global.window_x
+    local min_x = (self.site.global_min_x - df.global.world.map.region_x + self.offset.x) * 48 - df.global.window_x
     local max_x = min_x + self.size.x * 48 - 1
-    local min_y = self.offset.y * 48 - df.global.window_y
+    local min_y = (self.site.global_min_y - df.global.world.map.region_y + self.offset.y) * 48 - df.global.window_y
     local max_y = min_y + self.size.y * 48 - 1
 
     local draw_queue = {
@@ -1500,7 +1509,7 @@ function main(...)
 
             -- If the widget is enabled in gui/control-panel, or no data is to be preserved
             if isWidgetEnabled() or keepNothing then
-                local keepData = keepNothing and nil or KEEP_DATA_DEFAULT
+                local keepData = not keepNothing and KEEP_DATA_DEFAULT or nil
                 if args.keepData and keepDataString and not keepNothing then
                     print(args.keepData)
                     keepData = {}
